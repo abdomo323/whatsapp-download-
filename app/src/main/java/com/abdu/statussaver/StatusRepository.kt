@@ -14,16 +14,39 @@ data class StatusItem(
     val lastModified: Long
 )
 
+data class ListResult(val items: List<StatusItem>, val folder: String)
+
 object StatusRepository {
 
     private val imageExt = setOf("jpg", "jpeg", "png", "gif")
     private val videoExt = setOf("mp4")
 
+    /** لو المستخدم اختار مجلد أعلى (مثلاً Media أو WhatsApp) ندور جواه على .Statuses */
+    private fun resolveStatusesDir(root: DocumentFile): DocumentFile {
+        if (root.name == ".Statuses") return root
+        val candidates = listOf(
+            listOf(".Statuses"),
+            listOf("Media", ".Statuses"),
+            listOf("WhatsApp", "Media", ".Statuses"),
+            listOf("WhatsApp Business", "Media", ".Statuses")
+        )
+        for (path in candidates) {
+            var cur: DocumentFile? = root
+            for (seg in path) {
+                cur = cur?.findFile(seg)
+            }
+            if (cur != null && cur.isDirectory) return cur
+        }
+        return root
+    }
+
     /** يقرأ ملفات الحالات من الفولدر اللي اختاره المستخدم */
-    fun list(context: Context, tree: Uri): List<StatusItem> {
+    fun list(context: Context, tree: Uri): ListResult {
         return try {
-            val dir = DocumentFile.fromTreeUri(context, tree) ?: return emptyList()
-            dir.listFiles()
+            val root = DocumentFile.fromTreeUri(context, tree)
+                ?: return ListResult(emptyList(), "؟")
+            val dir = resolveStatusesDir(root)
+            val items = dir.listFiles()
                 .filter { it.isFile }
                 .mapNotNull { f ->
                     val name = f.name ?: return@mapNotNull null
@@ -35,8 +58,9 @@ object StatusRepository {
                     }
                 }
                 .sortedByDescending { it.lastModified }
+            ListResult(items, dir.name ?: "؟")
         } catch (e: Exception) {
-            emptyList()
+            ListResult(emptyList(), "؟")
         }
     }
 
