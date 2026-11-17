@@ -92,11 +92,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val Green = Color(0xFF25D366)
-private val Purple = Color(0xFF7C5CFF)
-private val Navy = Color(0xFF0B1020)
-private val CardBg = Color(0xCC151B2E)
-private val SoftText = Color(0xFFB8C0D8)
+private val Green = Color(0xFF20D8FF)
+private val Purple = Color(0xFF246BFF)
+private val Navy = Color(0xFF050B2B)
+private val CardBg = Color(0xAA123B83)
+private val SoftText = Color(0xFFC4D9FF)
 
 enum class Source(
     val key: String,
@@ -129,11 +129,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
-                    primary = Green,
+                    primary = Color(0xFF18CFFF),
                     onPrimary = Color(0xFF04210F),
-                    secondary = Purple,
+                    secondary = Color(0xFF4169FF),
                     background = Navy,
-                    surface = Color(0xFF151B2E),
+                    surface = Color(0xCC102D68),
                     onBackground = Color.White,
                     onSurface = Color.White
                 )
@@ -171,14 +171,14 @@ fun AnimatedBackground() {
     Canvas(Modifier.fillMaxSize()) {
         drawRect(
             Brush.verticalGradient(
-                listOf(Color(0xFF070B18), Color(0xFF0F1630), Color(0xFF0A1A1A))
+                listOf(Color(0xFF030825), Color(0xFF082D75), Color(0xFF07133F))
             )
         )
         val w = size.width
         val h = size.height
-        glow(Offset(w * (0.2f + 0.6f * a), h * (0.15f + 0.2f * b)), w * 0.65f, Color(0x6625D366))
-        glow(Offset(w * (0.85f - 0.6f * b), h * (0.5f + 0.2f * c)), w * 0.75f, Color(0x557C5CFF))
-        glow(Offset(w * (0.3f + 0.4f * c), h * (0.88f - 0.25f * a)), w * 0.65f, Color(0x4400B8D4))
+        glow(Offset(w * (0.2f + 0.6f * a), h * (0.15f + 0.2f * b)), w * 0.65f, Color(0x6620D8FF))
+        glow(Offset(w * (0.85f - 0.6f * b), h * (0.5f + 0.2f * c)), w * 0.75f, Color(0x554169FF))
+        glow(Offset(w * (0.3f + 0.4f * c), h * (0.88f - 0.25f * a)), w * 0.65f, Color(0x4430C8FF))
     }
 }
 
@@ -224,9 +224,9 @@ fun App() {
         contentColor = Color.White,
         topBar = {
             TopAppBar(
-                title = { Text("حافظ الحالات", fontWeight = FontWeight.Bold) },
+                title = { Text("Story Downloader", fontWeight = FontWeight.ExtraBold) },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent,
+                    containerColor = Color(0x331A8CFF),
                     titleContentColor = Color.White
                 )
             )
@@ -235,7 +235,7 @@ fun App() {
         Column(Modifier.padding(padding).fillMaxSize()) {
             TabRow(
                 selectedTabIndex = tab,
-                containerColor = Color.Transparent,
+                containerColor = Color(0x331A8CFF),
                 contentColor = Green
             ) {
                 sources.forEachIndexed { i, s ->
@@ -265,6 +265,7 @@ fun App() {
 fun SourceScreen(source: Source, uriStr: String?, onPick: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var autoRunning by rememberSaveable { mutableStateOf(false) }
 
     if (uriStr == null) {
         val t = rememberInfiniteTransition(label = "float")
@@ -316,6 +317,17 @@ fun SourceScreen(source: Source, uriStr: String?, onPick: () -> Unit) {
         ) {
             RefreshButton { refresh++ }
             Button(
+                onClick = {
+                    if (autoRunning) AutoSaveService.stop(context)
+                    else AutoSaveService.start(context, uriStr = uriStr)
+                    autoRunning = !autoRunning
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (autoRunning) Color(0xFFB33A63) else Color(0xFF0759D8)
+                ),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+            ) { Text(if (autoRunning) "إيقاف" else "تلقائي", fontWeight = FontWeight.Bold) }
+            Button(
                 modifier = Modifier.weight(1f),
                 enabled = items.isNotEmpty(),
                 onClick = {
@@ -333,7 +345,7 @@ fun SourceScreen(source: Source, uriStr: String?, onPick: () -> Unit) {
             FilledTonalIconButton(
                 onClick = onPick,
                 colors = IconButtonDefaults.filledTonalIconButtonColors(
-                    containerColor = Color(0x33FFFFFF),
+                    containerColor = Color(0x3324BFFF),
                     contentColor = Color.White
                 )
             ) { Icon(Icons.Rounded.FolderOpen, contentDescription = "تغيير المجلد") }
@@ -389,7 +401,7 @@ fun RefreshButton(onClick: () -> Unit) {
     FilledTonalIconButton(
         onClick = { turns++; onClick() },
         colors = IconButtonDefaults.filledTonalIconButtonColors(
-            containerColor = Color(0x33FFFFFF),
+            containerColor = Color(0x3324BFFF),
             contentColor = Color.White
         )
     ) { Icon(Icons.Rounded.Refresh, contentDescription = "تحديث", modifier = Modifier.rotate(angle)) }
@@ -434,7 +446,7 @@ fun StatusCard(item: StatusItem, index: Int, onSave: () -> Unit) {
             scaleY = 0.85f + 0.15f * appear.value
             translationY = (1f - appear.value) * 60f
         },
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = CardBg, contentColor = Color.White)
     ) {
         Column {
@@ -487,7 +499,7 @@ fun PulsingPlay() {
             .size(56.dp)
             .graphicsLayer { scaleX = s; scaleY = s }
             .clip(CircleShape)
-            .background(Color(0x99000000)),
+            .background(Color(0xBB061A50)),
         contentAlignment = Alignment.Center
     ) {
         Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Green, modifier = Modifier.size(36.dp))

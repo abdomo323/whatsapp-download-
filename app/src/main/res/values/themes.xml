@@ -1,7 +1,8 @@
 <resources>
     <style name="Theme.StatusSaver" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#0B1020</item>
-        <item name="android:statusBarColor">#0B1020</item>
-        <item name="android:navigationBarColor">#0B1020</item>
+        <item name="android:windowBackground">#050B2B</item>
+        <item name="android:statusBarColor">#050B2B</item>
+        <item name="android:navigationBarColor">#050B2B</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>
