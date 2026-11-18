@@ -16,7 +16,6 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -41,7 +40,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -73,7 +71,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -81,14 +78,18 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import coil.compose.AsyncImage
 import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -265,7 +266,6 @@ fun App() {
 fun SourceScreen(source: Source, uriStr: String?, onPick: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var autoRunning by rememberSaveable { mutableStateOf(false) }
 
     if (uriStr == null) {
         val t = rememberInfiniteTransition(label = "float")
@@ -300,13 +300,24 @@ fun SourceScreen(source: Source, uriStr: String?, onPick: () -> Unit) {
 
     var result by remember(uriStr) { mutableStateOf(ListResult(emptyList(), "")) }
     var loading by remember(uriStr) { mutableStateOf(true) }
-    var refresh by remember { mutableIntStateOf(0) }
     val items = result.items
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    LaunchedEffect(uriStr, refresh) {
-        loading = true
-        result = withContext(Dispatchers.IO) { StatusRepository.list(context, Uri.parse(uriStr)) }
-        loading = false
+    // تحديث تلقائي كل ثانية تقريبًا طول ما التطبيق ظاهر قدامك،
+    // وأول ما ترجع من الواتساب للتطبيق بيحدّث على طول.
+    LaunchedEffect(uriStr, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                val latest = withContext(Dispatchers.IO) {
+                    StatusRepository.list(context, Uri.parse(uriStr))
+                }
+                // لو القراءة فشلت مرة (واتساب بيكتب ملف مثلًا) نحتفظ بالقائمة الحالية
+                val failed = latest.folder == "؟" && result.items.isNotEmpty()
+                if (!failed && latest != result) result = latest
+                loading = false
+                delay(1000)
+            }
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -315,18 +326,6 @@ fun SourceScreen(source: Source, uriStr: String?, onPick: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            RefreshButton { refresh++ }
-            Button(
-                onClick = {
-                    if (autoRunning) AutoSaveService.stop(context)
-                    else AutoSaveService.start(context, uriStr = uriStr)
-                    autoRunning = !autoRunning
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (autoRunning) Color(0xFFB33A63) else Color(0xFF0759D8)
-                ),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-            ) { Text(if (autoRunning) "إيقاف" else "تلقائي", fontWeight = FontWeight.Bold) }
             Button(
                 modifier = Modifier.weight(1f),
                 enabled = items.isNotEmpty(),
@@ -354,7 +353,7 @@ fun SourceScreen(source: Source, uriStr: String?, onPick: () -> Unit) {
         if (!loading && items.isEmpty()) {
             Column(Modifier.padding(16.dp)) {
                 Text(
-                    "ما في حالات هنا. افتح ${source.label} وشوف الحالات أول، وبعدين اضغط تحديث.",
+                    "ما في حالات هنا لسه. افتح أي حالة في ${source.label} وهتظهر هنا لوحدها.",
                     color = Color.White
                 )
                 Text(
@@ -391,20 +390,6 @@ fun SourceScreen(source: Source, uriStr: String?, onPick: () -> Unit) {
             }
         }
     }
-}
-
-/** زر التحديث: الأيقونة بتلف لفة كاملة كل ما تضغط */
-@Composable
-fun RefreshButton(onClick: () -> Unit) {
-    var turns by remember { mutableIntStateOf(0) }
-    val angle by animateFloatAsState(turns * 360f, tween(600), label = "spin")
-    FilledTonalIconButton(
-        onClick = { turns++; onClick() },
-        colors = IconButtonDefaults.filledTonalIconButtonColors(
-            containerColor = Color(0x3324BFFF),
-            contentColor = Color.White
-        )
-    ) { Icon(Icons.Rounded.Refresh, contentDescription = "تحديث", modifier = Modifier.rotate(angle)) }
 }
 
 /** أيقونة الحفظ بتنط فوق وتحت */
