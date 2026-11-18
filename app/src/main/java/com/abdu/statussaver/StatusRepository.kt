@@ -5,8 +5,11 @@ import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.compose.runtime.Immutable
 import androidx.documentfile.provider.DocumentFile
+import java.util.concurrent.ConcurrentHashMap
 
+@Immutable
 data class StatusItem(
     val uri: Uri,
     val name: String,
@@ -14,51 +17,125 @@ data class StatusItem(
     val lastModified: Long
 )
 
-data class ListResult(val items: List<StatusItem>, val folder: String)
+/** skipped = أسماء ملفات موجودة في المجلد بس ما قدرنا نعرف إنها صورة أو فيديو */
+@Immutable
+data class ListResult(
+    val items: List<StatusItem>,
+    val folder: String,
+    val skipped: List<String> = emptyList()
+)
 
 object StatusRepository {
 
-    private val imageExt = setOf("jpg", "jpeg", "png", "gif")
-    private val videoExt = setOf("mp4")
+    private val imageExt = setOf("jpg", "jpeg", "jpe", "png", "gif", "webp", "heic", "heif")
+    private val videoExt = setOf("mp4", "3gp", "mkv", "webm", "mov")
 
-    /** لو المستخدم اختار مجلد أعلى (مثلاً Media أو WhatsApp) ندور جواه على .Statuses */
-    private fun resolveStatusesDir(root: DocumentFile): DocumentFile {
-        if (root.name == ".Statuses") return root
-        val candidates = listOf(
-            listOf(".Statuses"),
-            listOf("Media", ".Statuses"),
-            listOf("WhatsApp", "Media", ".Statuses"),
-            listOf("WhatsApp Business", "Media", ".Statuses")
-        )
-        for (path in candidates) {
+    private enum class Kind { IMAGE, VIDEO, UNKNOWN }
+
+    /** نتيجة التعرف على نوع كل ملف (بالمسار + وقت التعديل) عشان ما نعيد الفحص كل ثانية */
+    private val kindCache = ConcurrentHashMap<String, Kind>()
+
+    /** مجلدات .Statuses اللي اتلقت قبل كده (بنحفظها لأن البحث عنها بطيء) */
+    private val dirCache = ConcurrentHashMap<String, List<DocumentFile>>()
+
+    private val candidatePaths = listOf(
+        listOf(".Statuses"),
+        listOf("Media", ".Statuses"),
+        listOf("WhatsApp", "Media", ".Statuses"),
+        listOf("WhatsApp Business", "Media", ".Statuses"),
+        // لو المستخدم اختار Android/media نفسه (مفيد خصوصًا مع واتساب Dual)
+        listOf("com.whatsapp", "WhatsApp", "Media", ".Statuses"),
+        listOf("com.whatsapp.w4b", "WhatsApp Business", "Media", ".Statuses")
+    )
+
+    /** لو المستخدم اختار مجلد أعلى (مثلاً Media أو WhatsApp أو Android/media) ندور جواه على كل .Statuses */
+    private fun resolveStatusesDirs(tree: Uri, root: DocumentFile): List<DocumentFile> {
+        if (root.name == ".Statuses") return listOf(root)
+        dirCache[tree.toString()]?.let { return it }
+
+        val found = mutableListOf<DocumentFile>()
+        for (path in candidatePaths) {
             var cur: DocumentFile? = root
             for (seg in path) {
                 cur = cur?.findFile(seg)
             }
-            if (cur != null && cur.isDirectory) return cur
+            val dir = cur
+            if (dir != null && dir.isDirectory && found.none { it.uri == dir.uri }) found.add(dir)
         }
-        return root
+        if (found.isEmpty()) return listOf(root)
+        dirCache[tree.toString()] = found
+        return found
     }
 
-    /** يقرأ ملفات الحالات من الفولدر اللي اختاره المستخدم */
+    /** نحدد نوع الملف: بالامتداد، وبعدها بنوع الملف اللي بيقوله النظام، وبعدها بقراءة أول بايتات منه */
+    private fun kindOf(context: Context, f: DocumentFile, name: String, modified: Long): Kind {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        if (ext in videoExt) return Kind.VIDEO
+        if (ext in imageExt) return Kind.IMAGE
+
+        val key = "${f.uri}|$modified"
+        kindCache[key]?.let { return it }
+
+        val mime = f.type ?: ""
+        val kind = when {
+            mime.startsWith("video/") -> Kind.VIDEO
+            mime.startsWith("image/") -> Kind.IMAGE
+            else -> sniff(context, f.uri)
+        }
+        kindCache[key] = kind
+        return kind
+    }
+
+    private fun sniff(context: Context, uri: Uri): Kind {
+        return try {
+            val buf = ByteArray(16)
+            val n = context.contentResolver.openInputStream(uri)?.use { it.read(buf) } ?: -1
+            if (n < 4) return Kind.UNKNOWN
+            fun b(i: Int) = buf[i].toInt() and 0xFF
+            when {
+                b(0) == 0xFF && b(1) == 0xD8 && b(2) == 0xFF -> Kind.IMAGE // JPEG
+                b(0) == 0x89 && b(1) == 0x50 && b(2) == 0x4E && b(3) == 0x47 -> Kind.IMAGE // PNG
+                b(0) == 0x47 && b(1) == 0x49 && b(2) == 0x46 -> Kind.IMAGE // GIF
+                n >= 12 && b(0) == 0x52 && b(1) == 0x49 && b(2) == 0x46 && b(3) == 0x46 &&
+                    b(8) == 0x57 && b(9) == 0x45 && b(10) == 0x42 && b(11) == 0x50 -> Kind.IMAGE // WEBP
+                n >= 12 && b(4) == 0x66 && b(5) == 0x74 && b(6) == 0x79 && b(7) == 0x70 -> {
+                    // ftyp: mp4/mov/3gp، أو HEIC لو الـ brand بتاعه heic/heif
+                    val brand = String(buf, 8, 4, Charsets.ISO_8859_1)
+                    if (brand.startsWith("hei") || brand.startsWith("mif1") || brand.startsWith("msf1"))
+                        Kind.IMAGE else Kind.VIDEO
+                }
+                else -> Kind.UNKNOWN
+            }
+        } catch (e: Exception) {
+            Kind.UNKNOWN
+        }
+    }
+
+    /** يقرأ ملفات الحالات (صور وفيديو) من الفولدر اللي اختاره المستخدم */
     fun list(context: Context, tree: Uri): ListResult {
         return try {
             val root = DocumentFile.fromTreeUri(context, tree)
                 ?: return ListResult(emptyList(), "؟")
-            val dir = resolveStatusesDir(root)
-            val items = dir.listFiles()
+            val dirs = resolveStatusesDirs(tree, root)
+            val skipped = mutableListOf<String>()
+            val items = dirs
+                .flatMap { it.listFiles().toList() }
                 .filter { it.isFile }
                 .mapNotNull { f ->
                     val name = f.name ?: return@mapNotNull null
-                    val ext = name.substringAfterLast('.', "").lowercase()
-                    when {
-                        ext in videoExt -> StatusItem(f.uri, name, true, f.lastModified())
-                        ext in imageExt -> StatusItem(f.uri, name, false, f.lastModified())
-                        else -> null
+                    if (name.startsWith(".")) return@mapNotNull null // مثل .nomedia
+                    val modified = f.lastModified()
+                    when (kindOf(context, f, name, modified)) {
+                        Kind.VIDEO -> StatusItem(f.uri, name, true, modified)
+                        Kind.IMAGE -> StatusItem(f.uri, name, false, modified)
+                        Kind.UNKNOWN -> {
+                            skipped.add(name)
+                            null
+                        }
                     }
                 }
                 .sortedByDescending { it.lastModified }
-            ListResult(items, dir.name ?: "؟")
+            ListResult(items, dirs.first().name ?: "؟", skipped)
         } catch (e: Exception) {
             ListResult(emptyList(), "؟")
         }
@@ -73,6 +150,8 @@ object StatusRepository {
                 item.isVideo -> "video/mp4"
                 ext == "png" -> "image/png"
                 ext == "gif" -> "image/gif"
+                ext == "webp" -> "image/webp"
+                ext == "heic" || ext == "heif" -> "image/heic"
                 else -> "image/jpeg"
             }
             val collection = if (item.isVideo)

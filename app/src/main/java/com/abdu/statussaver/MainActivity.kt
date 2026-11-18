@@ -11,22 +11,39 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,9 +55,11 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SaveAlt
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -54,6 +73,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
@@ -71,18 +91,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import coil.compose.AsyncImage
@@ -94,10 +116,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private val Green = Color(0xFF20D8FF)
-private val Purple = Color(0xFF246BFF)
 private val Navy = Color(0xFF050B2B)
 private val CardBg = Color(0xAA123B83)
 private val SoftText = Color(0xFFC4D9FF)
+private val DialogBg = Color(0xFF0B1F52)
 
 enum class Source(
     val key: String,
@@ -114,6 +136,11 @@ enum class Source(
         "w4b", "واتساب بزنس",
         "primary%3AAndroid%2Fmedia%2Fcom.whatsapp.w4b%2FWhatsApp%20Business%2FMedia%2F.Statuses",
         "primary%3AWhatsApp%20Business%2FMedia%2F.Statuses"
+    ),
+    DUAL(
+        "dual", "واتساب Dual",
+        "primary%3AAndroid%2Fmedia",
+        "primary%3AAndroid%2Fmedia"
     );
 
     /** المكان اللي يفتح فيه اختيار الفولدر مباشرة */
@@ -127,6 +154,7 @@ enum class Source(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestHighRefreshRate()
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -148,9 +176,29 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    /** يطلب من الشاشة أعلى معدل تحديث متاح (90/120Hz) بنفس الدقة الحالية */
+    private fun requestHighRefreshRate() {
+        try {
+            @Suppress("DEPRECATION")
+            val display = windowManager.defaultDisplay
+            val cur = display.mode
+            val best = display.supportedModes
+                .filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight }
+                .maxByOrNull { it.refreshRate } ?: return
+            val lp = window.attributes
+            lp.preferredDisplayModeId = best.modeId
+            window.attributes = lp
+        } catch (_: Exception) {
+        }
+    }
 }
 
-/** خلفية غامقة فيها دوائر ضوء بتتحرك ببطء */
+/**
+ * خلفية فيها دوائر ضوء بتتحرك ببطء.
+ * الدوائر مرسومة مرة واحدة وبتتحرك بـ graphicsLayer (على الـ GPU)
+ * عشان ما تتعبش السكرول.
+ */
 @Composable
 fun AnimatedBackground() {
     val t = rememberInfiniteTransition(label = "bg")
@@ -169,25 +217,67 @@ fun AnimatedBackground() {
         infiniteRepeatable(tween(31000, easing = LinearEasing), RepeatMode.Reverse),
         label = "c"
     )
-    Canvas(Modifier.fillMaxSize()) {
-        drawRect(
-            Brush.verticalGradient(
-                listOf(Color(0xFF030825), Color(0xFF082D75), Color(0xFF07133F))
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xFF030825), Color(0xFF082D75), Color(0xFF07133F))
+                )
             )
-        )
-        val w = size.width
-        val h = size.height
-        glow(Offset(w * (0.2f + 0.6f * a), h * (0.15f + 0.2f * b)), w * 0.65f, Color(0x6620D8FF))
-        glow(Offset(w * (0.85f - 0.6f * b), h * (0.5f + 0.2f * c)), w * 0.75f, Color(0x554169FF))
-        glow(Offset(w * (0.3f + 0.4f * c), h * (0.88f - 0.25f * a)), w * 0.65f, Color(0x4430C8FF))
+    ) {
+        val density = LocalDensity.current
+        val wPx = with(density) { maxWidth.toPx() }
+        val hPx = with(density) { maxHeight.toPx() }
+
+        Glow(maxWidth * 1.3f, Color(0x6620D8FF), Modifier.graphicsLayer {
+            translationX = wPx * (0.2f + 0.6f * a) - size.width / 2
+            translationY = hPx * (0.15f + 0.2f * b) - size.height / 2
+        })
+        Glow(maxWidth * 1.5f, Color(0x554169FF), Modifier.graphicsLayer {
+            translationX = wPx * (0.85f - 0.6f * b) - size.width / 2
+            translationY = hPx * (0.5f + 0.2f * c) - size.height / 2
+        })
+        Glow(maxWidth * 1.3f, Color(0x4430C8FF), Modifier.graphicsLayer {
+            translationX = wPx * (0.3f + 0.4f * c) - size.width / 2
+            translationY = hPx * (0.88f - 0.25f * a) - size.height / 2
+        })
     }
 }
 
-private fun DrawScope.glow(center: Offset, radius: Float, color: Color) {
-    drawCircle(
-        brush = Brush.radialGradient(listOf(color, Color.Transparent), center = center, radius = radius),
-        radius = radius,
-        center = center
+@Composable
+private fun Glow(diameter: Dp, color: Color, modifier: Modifier) {
+    Box(
+        modifier
+            .size(diameter)
+            .background(Brush.radialGradient(listOf(color, Color.Transparent)))
+    )
+}
+
+/** زرار بينط لما تضغط عليه */
+@Composable
+fun BounceButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    containerColor: Color = Color.Unspecified,
+    content: @Composable RowScope.() -> Unit
+) {
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        if (pressed) 0.92f else 1f,
+        spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "press"
+    )
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        interactionSource = src,
+        colors = if (containerColor == Color.Unspecified) ButtonDefaults.buttonColors()
+        else ButtonDefaults.buttonColors(containerColor = containerColor),
+        modifier = modifier.graphicsLayer { scaleX = scale; scaleY = scale },
+        content = content
     )
 }
 
@@ -249,62 +339,106 @@ fun App() {
                     )
                 }
             }
-            val src = sources[tab]
-            SourceScreen(
-                source = src,
-                uriStr = uris[src.key],
-                onPick = {
-                    pendingKey = src.key
-                    picker.launch(src.initialUri())
-                }
-            )
+            // انتقال بالسحب والتلاشي بين التبويبات
+            AnimatedContent(
+                targetState = tab,
+                modifier = Modifier.fillMaxSize(),
+                transitionSpec = {
+                    val dir = if (targetState > initialState) 1 else -1
+                    (slideInHorizontally(tween(320)) { it * dir / 3 } + fadeIn(tween(320))) togetherWith
+                        (slideOutHorizontally(tween(320)) { -it * dir / 3 } + fadeOut(tween(200)))
+                },
+                label = "tabs"
+            ) { idx ->
+                val src = sources[idx]
+                SourceScreen(
+                    source = src,
+                    uriStr = uris[src.key],
+                    onPick = {
+                        pendingKey = src.key
+                        picker.launch(src.initialUri())
+                    }
+                )
+            }
         }
     }
 }
 
 @Composable
 fun SourceScreen(source: Source, uriStr: String?, onPick: () -> Unit) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    if (uriStr == null) PickFolderScreen(source, onPick) else SourceContent(source, uriStr, onPick)
+}
 
-    if (uriStr == null) {
-        val t = rememberInfiniteTransition(label = "float")
-        val up by t.animateFloat(
-            0f, 1f,
-            infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-            label = "up"
+@Composable
+fun PickFolderScreen(source: Source, onPick: () -> Unit) {
+    val t = rememberInfiniteTransition(label = "float")
+    val up by t.animateFloat(
+        0f, 1f,
+        infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "up"
+    )
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            Icons.Rounded.FolderOpen,
+            contentDescription = null,
+            tint = Green,
+            modifier = Modifier
+                .size(72.dp)
+                .graphicsLayer { translationY = -16f * up * density }
         )
-        Column(
-            Modifier.fillMaxSize().padding(24.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Icon(
-                Icons.Rounded.FolderOpen,
-                contentDescription = null,
-                tint = Green,
-                modifier = Modifier
-                    .size(72.dp)
-                    .graphicsLayer { translationY = -16f * up * density }
-            )
-            Text(
+        Text(
+            if (source == Source.DUAL)
+                "أول مرة بس: اضغط الزر تحت واختار مجلد Android/media (أو مجلد .Statuses نفسه لو لقيته)، " +
+                    "وبعدين \"استخدام هذا المجلد\" وبعدها \"السماح\".\n" +
+                    "لو الـ Dual شغال في مساحة منفصلة (Dual Messenger / Second Space) وما ظهرش في الاختيار، " +
+                    "ثبّت التطبيق ده جوه المساحة دي كمان وافتحه من هناك."
+            else
                 "أول مرة بس: اضغط الزر تحت، وبعدين اضغط \"استخدام هذا المجلد\" وبعدها \"السماح\".\n" +
                     "لو المجلد ما ظهر، افتح ${source.label} وشوف أي حالة أول.",
-                color = SoftText,
-                modifier = Modifier.padding(vertical = 16.dp)
-            )
-            Button(onClick = onPick) { Text("اختيار مجلد حالات ${source.label}") }
-        }
-        return
+            color = SoftText,
+            modifier = Modifier.padding(vertical = 16.dp)
+        )
+        BounceButton(onClick = onPick) { Text("اختيار مجلد حالات ${source.label}") }
     }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun SourceContent(source: Source, uriStr: String, onPick: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     var result by remember(uriStr) { mutableStateOf(ListResult(emptyList(), "")) }
     var loading by remember(uriStr) { mutableStateOf(true) }
+    var knownCount by remember(uriStr) { mutableIntStateOf(-1) }
+    val animatedKeys = remember(uriStr) { HashSet<String>() }
     val items = result.items
-    val lifecycleOwner = LocalLifecycleOwner.current
 
-    // تحديث تلقائي كل ثانية تقريبًا طول ما التطبيق ظاهر قدامك،
-    // وأول ما ترجع من الواتساب للتطبيق بيحدّث على طول.
+    var previewItem by remember { mutableStateOf<StatusItem?>(null) }
+    var confirmSaveAll by remember { mutableStateOf(false) }
+    var bannerText by remember { mutableStateOf("") }
+    var bannerVisible by remember { mutableStateOf(false) }
+    var bannerTick by remember { mutableIntStateOf(0) }
+
+    val showBanner: (String) -> Unit = { text ->
+        bannerText = text
+        bannerVisible = true
+        bannerTick++
+    }
+    LaunchedEffect(bannerTick) {
+        if (bannerTick > 0) {
+            delay(2200)
+            bannerVisible = false
+        }
+    }
+
+    // تحديث تلقائي كل ثانية تقريبًا طول ما التطبيق ظاهر،
+    // وأول ما ترجع من الواتساب بيحدّث على طول.
     LaunchedEffect(uriStr, lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
@@ -313,86 +447,185 @@ fun SourceScreen(source: Source, uriStr: String?, onPick: () -> Unit) {
                 }
                 // لو القراءة فشلت مرة (واتساب بيكتب ملف مثلًا) نحتفظ بالقائمة الحالية
                 val failed = latest.folder == "؟" && result.items.isNotEmpty()
-                if (!failed && latest != result) result = latest
+                if (!failed && latest != result) {
+                    result = latest
+                    if (latest.folder != "؟") {
+                        val prev = knownCount
+                        knownCount = latest.items.size
+                        if (prev >= 0 && latest.items.size > prev) {
+                            showBanner("وصلت ${latest.items.size - prev} حالة جديدة ✨")
+                        }
+                    }
+                }
                 loading = false
                 delay(1000)
             }
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Button(
-                modifier = Modifier.weight(1f),
-                enabled = items.isNotEmpty(),
-                onClick = {
-                    scope.launch {
-                        val ok = withContext(Dispatchers.IO) {
-                            items.count { StatusRepository.saveToGallery(context, it) }
-                        }
-                        Toast.makeText(context, "تم حفظ $ok من ${items.size}", Toast.LENGTH_SHORT).show()
+    val saveOne: (StatusItem) -> Unit = { item ->
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) { StatusRepository.saveToGallery(context, item) }
+            showBanner(if (ok) "تم الحفظ في المعرض ✓" else "فشل الحفظ")
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BounceButton(
+                    modifier = Modifier.weight(1f),
+                    enabled = items.isNotEmpty(),
+                    onClick = { confirmSaveAll = true }
+                ) {
+                    BouncingSaveIcon()
+                    Text("  حفظ الكل")
+                }
+                FilledTonalIconButton(
+                    onClick = onPick,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = Color(0x3324BFFF),
+                        contentColor = Color.White
+                    )
+                ) { Icon(Icons.Rounded.FolderOpen, contentDescription = "تغيير المجلد") }
+            }
+
+            if (result.skipped.isNotEmpty()) {
+                Text(
+                    "ملفات موجودة بس ما قدرت أعرف نوعها (${result.skipped.size}): " +
+                        result.skipped.take(3).joinToString(" ، "),
+                    color = SoftText,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+
+            if (!loading && items.isEmpty()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        "ما في حالات هنا لسه. افتح أي حالة في ${source.label} وهتظهر هنا لوحدها.",
+                        color = Color.White
+                    )
+                    Text(
+                        "\nالمجلد المختار: ${result.folder}",
+                        color = SoftText
+                    )
+                    if (source != Source.DUAL) {
+                        Text(
+                            "\nلو حالاتك من نسخة واتساب المكررة (Dual)، استخدم تبويب \"واتساب Dual\".",
+                            color = SoftText
+                        )
                     }
                 }
-            ) {
-                BouncingSaveIcon()
-                Text("  حفظ الكل")
             }
-            FilledTonalIconButton(
-                onClick = onPick,
-                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                    containerColor = Color(0x3324BFFF),
-                    contentColor = Color.White
-                )
-            ) { Icon(Icons.Rounded.FolderOpen, contentDescription = "تغيير المجلد") }
-        }
 
-        if (!loading && items.isEmpty()) {
-            Column(Modifier.padding(16.dp)) {
-                Text(
-                    "ما في حالات هنا لسه. افتح أي حالة في ${source.label} وهتظهر هنا لوحدها.",
-                    color = Color.White
-                )
-                Text(
-                    "\nالمجلد المختار: ${result.folder}",
-                    color = SoftText
-                )
-                if (source == Source.WHATSAPP) {
-                    Text(
-                        "\nلو بتشوف حالاتك من نسخة واتساب المكررة (Dual apps)، لازم تكرر التطبيق ده كمان " +
-                            "وتفتح النسخة المكررة منه.",
-                        color = SoftText
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
+                contentPadding = PaddingValues(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                itemsIndexed(
+                    items,
+                    key = { _, it -> it.uri.toString() },
+                    contentType = { _, _ -> "status" }
+                ) { index, item ->
+                    // الأنيميشن بتاع الظهور بيشتغل مرة واحدة بس لكل كرت (مش كل ما تسكرول)
+                    val fresh = remember { animatedKeys.add(item.uri.toString()) }
+                    StatusCard(
+                        item = item,
+                        index = index,
+                        fresh = fresh,
+                        modifier = Modifier.animateItemPlacement(),
+                        onOpen = { previewItem = item },
+                        onSave = { saveOne(item) }
                     )
                 }
             }
         }
 
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(2),
-            contentPadding = PaddingValues(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+        // بوب أب صغير بيطلع من تحت: "حالة جديدة" / "تم الحفظ"
+        AnimatedVisibility(
+            visible = bannerVisible,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
+            enter = slideInVertically(spring(dampingRatio = 0.6f)) { it * 2 } + fadeIn() + scaleIn(initialScale = 0.8f),
+            exit = slideOutVertically { it * 2 } + fadeOut()
         ) {
-            itemsIndexed(items, key = { _, it -> it.uri.toString() }) { index, item ->
-                StatusCard(item, index) {
-                    scope.launch {
-                        val ok = withContext(Dispatchers.IO) { StatusRepository.saveToGallery(context, item) }
-                        Toast.makeText(
-                            context,
-                            if (ok) "تم الحفظ في المعرض" else "فشل الحفظ",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
-            }
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(Color(0xEE0759D8))
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+            ) { Text(bannerText, fontWeight = FontWeight.Bold, color = Color.White) }
         }
+    }
+
+    // بوب أب معاينة الحالة
+    previewItem?.let { item ->
+        PreviewDialog(
+            item = item,
+            onDismiss = { previewItem = null },
+            onSave = {
+                previewItem = null
+                saveOne(item)
+            },
+            onOpen = { openExternally(context, item) }
+        )
+    }
+
+    // بوب أب تأكيد "حفظ الكل"
+    if (confirmSaveAll) {
+        val snapshot = items
+        AlertDialog(
+            onDismissRequest = { confirmSaveAll = false },
+            containerColor = DialogBg,
+            titleContentColor = Color.White,
+            textContentColor = SoftText,
+            shape = RoundedCornerShape(28.dp),
+            title = { Text("حفظ الكل؟", fontWeight = FontWeight.Bold) },
+            text = { Text("هتنزل ${snapshot.size} حالة في المعرض (مجلد StatusSaver).") },
+            confirmButton = {
+                BounceButton(onClick = {
+                    confirmSaveAll = false
+                    scope.launch {
+                        val ok = withContext(Dispatchers.IO) {
+                            snapshot.count { StatusRepository.saveToGallery(context, it) }
+                        }
+                        showBanner("تم حفظ $ok من ${snapshot.size} ✓")
+                    }
+                }) { Text("حفظ") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSaveAll = false }) { Text("إلغاء", color = SoftText) }
+            }
+        )
     }
 }
 
-/** أيقونة الحفظ بتنط فوق وتحت */
+private fun openExternally(context: Context, item: StatusItem) {
+    try {
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(item.uri, if (item.isVideo) "video/*" else "image/*")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, "ما لقيت تطبيق يفتح الملف", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun statusRequest(context: Context, item: StatusItem, w: Int, h: Int): ImageRequest =
+    ImageRequest.Builder(context)
+        .data(item.uri)
+        .size(w, h) // نفك الصورة بحجم العرض بس، عشان السكرول يفضل خفيف
+        .crossfade(300)
+        .apply { if (item.isVideo) decoderFactory(VideoFrameDecoder.Factory()) }
+        .build()
+
+/** أيقونة الحفظ بتنط فوق وتحت (مستخدمة في زر "حفظ الكل" بس) */
 @Composable
 fun BouncingSaveIcon() {
     val t = rememberInfiniteTransition(label = "bounce")
@@ -409,26 +642,40 @@ fun BouncingSaveIcon() {
 }
 
 @Composable
-fun StatusCard(item: StatusItem, index: Int, onSave: () -> Unit) {
+fun StatusCard(
+    item: StatusItem,
+    index: Int,
+    fresh: Boolean,
+    modifier: Modifier = Modifier,
+    onOpen: () -> Unit,
+    onSave: () -> Unit
+) {
     val context = LocalContext.current
-    val request = remember(item.uri) {
-        ImageRequest.Builder(context)
-            .data(item.uri)
-            .apply { if (item.isVideo) decoderFactory(VideoFrameDecoder.Factory()) }
-            .build()
+    val request = remember(item.uri) { statusRequest(context, item, 400, 533) }
+
+    // ظهور الكرت بالتدريج (مرة واحدة بس): يطلع من تحت ويكبر
+    val appear = remember { Animatable(if (fresh) 0f else 1f) }
+    LaunchedEffect(Unit) {
+        if (fresh) {
+            appear.animateTo(1f, tween(450, delayMillis = (index % 8) * 60, easing = FastOutSlowInEasing))
+        }
     }
 
-    // ظهور الكرت بالتدريج: يطلع من تحت ويكبر
-    val appear = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
-        appear.animateTo(1f, tween(450, delayMillis = (index % 8) * 70, easing = FastOutSlowInEasing))
-    }
+    // الكرت بينكمش شوية لما تضغط عليه ويرجع ببونس
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        if (pressed) 0.95f else 1f,
+        spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "cardPress"
+    )
 
     Card(
-        modifier = Modifier.graphicsLayer {
+        modifier = modifier.graphicsLayer {
             alpha = appear.value
-            scaleX = 0.85f + 0.15f * appear.value
-            scaleY = 0.85f + 0.15f * appear.value
+            val s = (0.85f + 0.15f * appear.value) * pressScale
+            scaleX = s
+            scaleY = s
             translationY = (1f - appear.value) * 60f
         },
         shape = RoundedCornerShape(24.dp),
@@ -439,16 +686,7 @@ fun StatusCard(item: StatusItem, index: Int, onSave: () -> Unit) {
                 Modifier
                     .fillMaxWidth()
                     .aspectRatio(0.75f)
-                    .clickable {
-                        try {
-                            val intent = Intent(Intent.ACTION_VIEW)
-                                .setDataAndType(item.uri, if (item.isVideo) "video/*" else "image/*")
-                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            context.startActivity(intent)
-                        } catch (_: ActivityNotFoundException) {
-                            Toast.makeText(context, "ما لقيت تطبيق يفتح الملف", Toast.LENGTH_SHORT).show()
-                        }
-                    },
+                    .clickable(interactionSource = src, indication = null) { onOpen() },
                 contentAlignment = Alignment.Center
             ) {
                 AsyncImage(
@@ -457,36 +695,98 @@ fun StatusCard(item: StatusItem, index: Int, onSave: () -> Unit) {
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
-                if (item.isVideo) PulsingPlay()
+                if (item.isVideo) PlayBadge()
             }
-            Button(
+            BounceButton(
                 onClick = onSave,
                 modifier = Modifier.fillMaxWidth().padding(8.dp)
             ) {
-                BouncingSaveIcon()
+                Icon(Icons.Rounded.SaveAlt, contentDescription = null)
                 Text("  حفظ")
             }
         }
     }
 }
 
-/** أيقونة التشغيل بتنبض على الفيديوهات */
+/** علامة التشغيل على الفيديوهات */
 @Composable
-fun PulsingPlay() {
-    val t = rememberInfiniteTransition(label = "pulse")
-    val s by t.animateFloat(
-        0.9f, 1.15f,
-        infiniteRepeatable(tween(900, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "s"
-    )
+fun PlayBadge() {
     Box(
         Modifier
             .size(56.dp)
-            .graphicsLayer { scaleX = s; scaleY = s }
             .clip(CircleShape)
             .background(Color(0xBB061A50)),
         contentAlignment = Alignment.Center
     ) {
         Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Green, modifier = Modifier.size(36.dp))
+    }
+}
+
+/** بوب أب معاينة: بيظهر بحجم صغير ويكبر ببونس */
+@Composable
+fun PreviewDialog(item: StatusItem, onDismiss: () -> Unit, onSave: () -> Unit, onOpen: () -> Unit) {
+    val context = LocalContext.current
+    val request = remember(item.uri) { statusRequest(context, item, 900, 1200) }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        var shown by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) { shown = true }
+        val scale by animateFloatAsState(
+            if (shown) 1f else 0.7f,
+            spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMediumLow),
+            label = "dlgScale"
+        )
+        val alpha by animateFloatAsState(if (shown) 1f else 0f, tween(220), label = "dlgAlpha")
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    this.alpha = alpha
+                },
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = DialogBg, contentColor = Color.White)
+        ) {
+            Column {
+                Box(
+                    Modifier.fillMaxWidth().aspectRatio(0.8f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AsyncImage(
+                        model = request,
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    if (item.isVideo) PlayBadge()
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BounceButton(onClick = onSave, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Rounded.SaveAlt, contentDescription = null)
+                        Text("  حفظ")
+                    }
+                    BounceButton(
+                        onClick = onOpen,
+                        modifier = Modifier.weight(1f),
+                        containerColor = Color(0xFF0759D8)
+                    ) { Text(if (item.isVideo) "تشغيل" else "فتح") }
+                    FilledTonalIconButton(
+                        onClick = onDismiss,
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = Color(0x3324BFFF),
+                            contentColor = Color.White
+                        )
+                    ) { Icon(Icons.Rounded.Close, contentDescription = "إغلاق") }
+                }
+            }
+        }
     }
 }
