@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import androidx.compose.runtime.Immutable
 import androidx.documentfile.provider.DocumentFile
@@ -27,6 +28,7 @@ data class ListResult(
 
 object StatusRepository {
 
+    private val audioExt = setOf("opus", "mp3", "m4a", "aac", "ogg", "amr", "wav")
     private val imageExt = setOf("jpg", "jpeg", "jpe", "png", "gif", "webp", "heic", "heif")
     private val videoExt = setOf("mp4", "3gp", "mkv", "webm", "mov")
 
@@ -45,7 +47,12 @@ object StatusRepository {
         listOf("WhatsApp Business", "Media", ".Statuses"),
         // لو المستخدم اختار Android/media نفسه (مفيد خصوصًا مع واتساب Dual)
         listOf("com.whatsapp", "WhatsApp", "Media", ".Statuses"),
-        listOf("com.whatsapp.w4b", "WhatsApp Business", "Media", ".Statuses")
+        listOf("com.whatsapp.w4b", "WhatsApp Business", "Media", ".Statuses"),
+        // لو اختار Android أو "Twin App data" (نسخة Dual)
+        listOf("media", "com.whatsapp", "WhatsApp", "Media", ".Statuses"),
+        listOf("media", "com.whatsapp.w4b", "WhatsApp Business", "Media", ".Statuses"),
+        listOf("Android", "media", "com.whatsapp", "WhatsApp", "Media", ".Statuses"),
+        listOf("Android", "media", "com.whatsapp.w4b", "WhatsApp Business", "Media", ".Statuses")
     )
 
     /** لو المستخدم اختار مجلد أعلى (مثلاً Media أو WhatsApp أو Android/media) ندور جواه على كل .Statuses */
@@ -67,20 +74,67 @@ object StatusRepository {
         return found
     }
 
+    private data class Child(val uri: Uri, val name: String, val mime: String, val modified: Long)
+
+    /**
+     * يقرأ كل ملفات المجلد بـ query واحد (أسرع بكتير من DocumentFile.listFiles
+     * اللي بيعمل query لكل ملف) عشان نقدر نحدّث كل نص ثانية.
+     */
+    private fun listChildren(context: Context, dir: DocumentFile): List<Child> {
+        try {
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+                dir.uri, DocumentsContract.getDocumentId(dir.uri)
+            )
+            val out = ArrayList<Child>()
+            val cursor = context.contentResolver.query(
+                childrenUri,
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_LAST_MODIFIED
+                ),
+                null, null, null
+            )
+            if (cursor != null) {
+                cursor.use { c ->
+                    while (c.moveToNext()) {
+                        val id = c.getString(0) ?: continue
+                        val name = c.getString(1) ?: continue
+                        val mime = c.getString(2) ?: ""
+                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) continue
+                        val modified = if (c.isNull(3)) 0L else c.getLong(3)
+                        out.add(
+                            Child(DocumentsContract.buildDocumentUriUsingTree(dir.uri, id), name, mime, modified)
+                        )
+                    }
+                }
+                return out
+            }
+        } catch (_: Exception) {
+        }
+        // احتياطي لو الطريقة السريعة فشلت
+        return dir.listFiles()
+            .filter { it.isFile }
+            .mapNotNull { f ->
+                val n = f.name ?: return@mapNotNull null
+                Child(f.uri, n, f.type ?: "", f.lastModified())
+            }
+    }
+
     /** نحدد نوع الملف: بالامتداد، وبعدها بنوع الملف اللي بيقوله النظام، وبعدها بقراءة أول بايتات منه */
-    private fun kindOf(context: Context, f: DocumentFile, name: String, modified: Long): Kind {
-        val ext = name.substringAfterLast('.', "").lowercase()
+    private fun kindOf(context: Context, ch: Child): Kind {
+        val ext = ch.name.substringAfterLast('.', "").lowercase()
         if (ext in videoExt) return Kind.VIDEO
         if (ext in imageExt) return Kind.IMAGE
 
-        val key = "${f.uri}|$modified"
+        val key = "${ch.uri}|${ch.modified}"
         kindCache[key]?.let { return it }
 
-        val mime = f.type ?: ""
         val kind = when {
-            mime.startsWith("video/") -> Kind.VIDEO
-            mime.startsWith("image/") -> Kind.IMAGE
-            else -> sniff(context, f.uri)
+            ch.mime.startsWith("video/") -> Kind.VIDEO
+            ch.mime.startsWith("image/") -> Kind.IMAGE
+            else -> sniff(context, ch.uri)
         }
         kindCache[key] = kind
         return kind
@@ -119,17 +173,15 @@ object StatusRepository {
             val dirs = resolveStatusesDirs(tree, root)
             val skipped = mutableListOf<String>()
             val items = dirs
-                .flatMap { it.listFiles().toList() }
-                .filter { it.isFile }
-                .mapNotNull { f ->
-                    val name = f.name ?: return@mapNotNull null
-                    if (name.startsWith(".")) return@mapNotNull null // مثل .nomedia
-                    val modified = f.lastModified()
-                    when (kindOf(context, f, name, modified)) {
-                        Kind.VIDEO -> StatusItem(f.uri, name, true, modified)
-                        Kind.IMAGE -> StatusItem(f.uri, name, false, modified)
+                .flatMap { listChildren(context, it) }
+                .mapNotNull { ch ->
+                    val ext = ch.name.substringAfterLast('.', "").lowercase()
+                    if (ch.name.startsWith(".") || ext in audioExt) return@mapNotNull null // .nomedia وملفات الصوت
+                    when (kindOf(context, ch)) {
+                        Kind.VIDEO -> StatusItem(ch.uri, ch.name, true, ch.modified)
+                        Kind.IMAGE -> StatusItem(ch.uri, ch.name, false, ch.modified)
                         Kind.UNKNOWN -> {
-                            skipped.add(name)
+                            skipped.add(ch.name)
                             null
                         }
                     }

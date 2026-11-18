@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -27,6 +28,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -79,6 +81,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -103,6 +106,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
@@ -125,7 +129,8 @@ enum class Source(
     val key: String,
     val label: String,
     private val modern: String,
-    private val legacy: String
+    private val legacy: String,
+    private val tree: String = "primary%3AAndroid%2Fmedia"
 ) {
     WHATSAPP(
         "wa", "واتساب",
@@ -137,16 +142,18 @@ enum class Source(
         "primary%3AAndroid%2Fmedia%2Fcom.whatsapp.w4b%2FWhatsApp%20Business%2FMedia%2F.Statuses",
         "primary%3AWhatsApp%20Business%2FMedia%2F.Statuses"
     ),
+    // نسخة Dual (Twin App) بتخزن في: Twin App data/Android/media/com.whatsapp/WhatsApp/Media/.Statuses
     DUAL(
         "dual", "واتساب Dual",
-        "primary%3AAndroid%2Fmedia",
-        "primary%3AAndroid%2Fmedia"
+        "primary%3ATwin%20App%20data%2FAndroid%2Fmedia%2Fcom.whatsapp%2FWhatsApp%2FMedia%2F.Statuses",
+        "primary%3ATwin%20App%20data%2FAndroid%2Fmedia%2Fcom.whatsapp%2FWhatsApp%2FMedia%2F.Statuses",
+        "primary%3ATwin%20App%20data"
     );
 
     /** المكان اللي يفتح فيه اختيار الفولدر مباشرة */
     fun initialUri(): Uri =
         if (Build.VERSION.SDK_INT >= 30)
-            Uri.parse("content://com.android.externalstorage.documents/tree/primary%3AAndroid%2Fmedia/document/$modern")
+            Uri.parse("content://com.android.externalstorage.documents/tree/$tree/document/$modern")
         else
             Uri.parse("content://com.android.externalstorage.documents/document/$legacy")
 }
@@ -392,10 +399,10 @@ fun PickFolderScreen(source: Source, onPick: () -> Unit) {
         )
         Text(
             if (source == Source.DUAL)
-                "أول مرة بس: اضغط الزر تحت واختار مجلد Android/media (أو مجلد .Statuses نفسه لو لقيته)، " +
-                    "وبعدين \"استخدام هذا المجلد\" وبعدها \"السماح\".\n" +
-                    "لو الـ Dual شغال في مساحة منفصلة (Dual Messenger / Second Space) وما ظهرش في الاختيار، " +
-                    "ثبّت التطبيق ده جوه المساحة دي كمان وافتحه من هناك."
+                "أول مرة بس: اضغط الزر تحت، وهيفتح على مجلد .Statuses بتاع الـ Dual " +
+                    "(Twin App data ← Android ← media ← com.whatsapp ← WhatsApp ← Media ← .Statuses).\n" +
+                    "اضغط \"استخدام هذا المجلد\" وبعدها \"السماح\".\n" +
+                    "لو ما فتحش عليه لوحده، روح للمسار ده يدوي، أو اختار مجلد Media وأنا هلاقي .Statuses جواه."
             else
                 "أول مرة بس: اضغط الزر تحت، وبعدين اضغط \"استخدام هذا المجلد\" وبعدها \"السماح\".\n" +
                     "لو المجلد ما ظهر، افتح ${source.label} وشوف أي حالة أول.",
@@ -437,7 +444,7 @@ fun SourceContent(source: Source, uriStr: String, onPick: () -> Unit) {
         }
     }
 
-    // تحديث تلقائي كل ثانية تقريبًا طول ما التطبيق ظاهر،
+    // تحديث تلقائي كل نص ثانية طول ما التطبيق ظاهر،
     // وأول ما ترجع من الواتساب بيحدّث على طول.
     LaunchedEffect(uriStr, lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -458,7 +465,7 @@ fun SourceContent(source: Source, uriStr: String, onPick: () -> Unit) {
                     }
                 }
                 loading = false
-                delay(1000)
+                delay(500)
             }
         }
     }
@@ -722,7 +729,66 @@ fun PlayBadge() {
     }
 }
 
-/** بوب أب معاينة: بيظهر بحجم صغير ويكبر ببونس */
+/** مشغّل فيديو جوه البوب أب: بيشتغل على طول، وضغطة على الفيديو توقفه/تكمله */
+@Composable
+fun InlineVideoPlayer(item: StatusItem, poster: ImageRequest, onError: () -> Unit) {
+    val context = LocalContext.current
+    val videoView = remember { VideoView(context) }
+    var ready by remember { mutableStateOf(false) }
+    var playing by remember { mutableStateOf(false) }
+
+    DisposableEffect(item.uri) {
+        videoView.setOnPreparedListener { mp ->
+            mp.isLooping = true
+            ready = true
+            playing = true
+            videoView.start()
+        }
+        videoView.setOnErrorListener { _, _, _ ->
+            Toast.makeText(context, "ما قدرت أشغل الفيديو هنا، هفتحه في مشغل تاني", Toast.LENGTH_SHORT).show()
+            onError()
+            true
+        }
+        videoView.setVideoURI(item.uri)
+        onDispose { videoView.stopPlayback() }
+    }
+
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        AndroidView(factory = { videoView }, modifier = Modifier.fillMaxSize())
+        // صورة الفيديو لحد ما يجهز
+        if (!ready) {
+            AsyncImage(
+                model = poster,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        AnimatedVisibility(
+            visible = ready && !playing,
+            enter = scaleIn() + fadeIn(),
+            exit = scaleOut() + fadeOut()
+        ) { PlayBadge() }
+        // طبقة شفافة فوق الفيديو لاستقبال الضغط
+        Box(
+            Modifier
+                .fillMaxSize()
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                    if (ready) {
+                        if (videoView.isPlaying) {
+                            videoView.pause()
+                            playing = false
+                        } else {
+                            videoView.start()
+                            playing = true
+                        }
+                    }
+                }
+        )
+    }
+}
+
+/** بوب أب معاينة: بيظهر بحجم صغير ويكبر ببونس، والفيديو بيشتغل فيه على طول */
 @Composable
 fun PreviewDialog(item: StatusItem, onDismiss: () -> Unit, onSave: () -> Unit, onOpen: () -> Unit) {
     val context = LocalContext.current
@@ -746,7 +812,8 @@ fun PreviewDialog(item: StatusItem, onDismiss: () -> Unit, onSave: () -> Unit, o
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
-                    this.alpha = alpha
+                    // الفيديو (SurfaceView) ما بيتعاملش كويس مع الشفافية، فنسيبها للصور بس
+                    this.alpha = if (item.isVideo) 1f else alpha
                 },
             shape = RoundedCornerShape(28.dp),
             colors = CardDefaults.cardColors(containerColor = DialogBg, contentColor = Color.White)
@@ -756,13 +823,16 @@ fun PreviewDialog(item: StatusItem, onDismiss: () -> Unit, onSave: () -> Unit, o
                     Modifier.fillMaxWidth().aspectRatio(0.8f),
                     contentAlignment = Alignment.Center
                 ) {
-                    AsyncImage(
-                        model = request,
-                        contentDescription = null,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    if (item.isVideo) PlayBadge()
+                    if (item.isVideo) {
+                        InlineVideoPlayer(item, request, onError = onOpen)
+                    } else {
+                        AsyncImage(
+                            model = request,
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
                 Row(
                     Modifier.fillMaxWidth().padding(12.dp),
@@ -773,11 +843,6 @@ fun PreviewDialog(item: StatusItem, onDismiss: () -> Unit, onSave: () -> Unit, o
                         Icon(Icons.Rounded.SaveAlt, contentDescription = null)
                         Text("  حفظ")
                     }
-                    BounceButton(
-                        onClick = onOpen,
-                        modifier = Modifier.weight(1f),
-                        containerColor = Color(0xFF0759D8)
-                    ) { Text(if (item.isVideo) "تشغيل" else "فتح") }
                     FilledTonalIconButton(
                         onClick = onDismiss,
                         colors = IconButtonDefaults.filledTonalIconButtonColors(
